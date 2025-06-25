@@ -1,0 +1,6 @@
+name: BungeeCloudBridge
+main: de.sync.cloud.BungeeCloudBridge
+version: 1.0
+author: DeinName
+softdepend: [CloudCore]
+description: Dynamisches Server-Registrierungs-Plugin für Cloud-Systeme wie CloudNet
