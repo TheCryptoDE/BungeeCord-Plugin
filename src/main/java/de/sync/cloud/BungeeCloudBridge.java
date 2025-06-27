@@ -8,6 +8,8 @@ import de.sync.cloud.infomation.BungeePluginMessageListener;
 import de.sync.cloud.infomation.ServerInfoProvider;
 import de.sync.cloud.listener.CloudSignBungeeListener;
 import de.sync.cloud.listener.ConnectEvent;
+import de.sync.cloud.listener.LoginListener;
+import de.sync.cloud.permissionsystem.PermissionManager;
 import de.sync.cloud.tab.TablistHandler;
 import net.md_5.bungee.api.CommandSender;
 import net.md_5.bungee.api.ProxyServer;
@@ -27,12 +29,15 @@ import java.net.Socket;
 import java.net.InetSocketAddress;
 import java.sql.*;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static de.sync.cloud.print.PrintInfo.PREFIX;
 import static de.sync.cloud.print.PrintInfo.sendHelp;
 
 
 public class BungeeCloudBridge extends Plugin implements Listener {
+
+    private PermissionManager permissionManager;
 
     private static final String AUTH_PASSWORD = "supersecret"; // MUSS gleich sein wie CloudSystem
     private static final String CLOUD_HOST = "127.0.0.1";
@@ -45,6 +50,10 @@ public class BungeeCloudBridge extends Plugin implements Listener {
 
     @Override
     public void onEnable() {
+        this.permissionManager = new PermissionManager(this);
+        this.permissionManager.reload();
+        startAutoUpdate();
+        getProxy().getPluginManager().registerListener(this, new LoginListener(permissionManager));
         getProxy().getPluginManager().registerListener(this, this);
         getProxy().getPluginManager().registerListener(this, new TablistHandler());
         getProxy().getPluginManager().registerListener(this, new ConnectEvent());
@@ -59,10 +68,8 @@ public class BungeeCloudBridge extends Plugin implements Listener {
         getProxy().getPluginManager().registerCommand(this, new CLOUD_Lobby("hub"));
         getProxy().getPluginManager().registerCommand(this, new CLOUD_Lobby("l"));
         loadMotdFromCloud();
-
         CloudWebSocketServer server = new CloudWebSocketServer(1234);
         server.start();
-
         loadAndStartMinServers();
         Map<String, ServerInfo> servers = ProxyServer.getInstance().getServers();
         getLogger().info("Registered servers:");
@@ -72,6 +79,22 @@ public class BungeeCloudBridge extends Plugin implements Listener {
             getLogger().info("- " + name + " -> " + info.getAddress().toString());
         }
     }
+
+    public PermissionManager getPermissionManager() {
+        return permissionManager;
+    }
+
+    private void startAutoUpdate() {
+        ProxyServer.getInstance().getScheduler().schedule(this, () -> {
+            try {
+                permissionManager.reload();
+                getLogger().info("Permissions automatisch neu geladen.");
+            } catch (Exception e) {
+                getLogger().warning("Fehler beim automatischen Reload: " + e.getMessage());
+            }
+        }, 10L, 10L, TimeUnit.SECONDS); // alle 60 Sekunden
+    }
+
     private void loadMotdFromCloud() {
         JsonObject request = new JsonObject();
         request.addProperty("type", "GET_MOTD");
@@ -86,7 +109,6 @@ public class BungeeCloudBridge extends Plugin implements Listener {
             motd = loadMotdFromFile();
         }
     }
-
     private void saveMotdToFile(String motd) {
         try {
             JsonObject json = new JsonObject();
@@ -104,14 +126,12 @@ public class BungeeCloudBridge extends Plugin implements Listener {
             getLogger().warning("Fehler beim Speichern der MOTD in service.json: " + e.getMessage());
         }
     }
-
     private String loadMotdFromFile() {
         if (!serviceFile.exists()) {
             getLogger().info("service.json existiert nicht, erstelle mit Standard-MOTD");
             saveMotdToFile("§aWillkommen auf dem Server!");
             return "§aWillkommen auf dem Server!";
         }
-
         try (FileReader reader = new FileReader(serviceFile)) {
             JsonObject json = JsonParser.parseReader(reader).getAsJsonObject();
             if (json.has("motd")) {
@@ -126,22 +146,17 @@ public class BungeeCloudBridge extends Plugin implements Listener {
             return "§cFehler beim Laden der MOTD";
         }
     }
-
     @EventHandler
     public void onProxyPing(ProxyPingEvent event) {
         ServerPing ping = event.getResponse();
         ping.setDescriptionComponent(new TextComponent(motd));
         event.setResponse(ping);
     }
-
     private String sendRequest(JsonObject request) {
-        // Ergänzt: Timeout und besseres Logging
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(CLOUD_HOST, CLOUD_PORT), 3000); // 3 Sekunden Timeout
-
             BufferedWriter out = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
             out.write("AUTH " + AUTH_PASSWORD + "\n");
             out.flush();
             String authResp = in.readLine();
@@ -149,29 +164,23 @@ public class BungeeCloudBridge extends Plugin implements Listener {
                 getLogger().warning("Auth fehlgeschlagen. Antwort: " + authResp);
                 return null;
             }
-
             out.write(request.toString() + "\n");
             out.flush();
-
             String response = in.readLine();
             if (response == null) {
                 getLogger().warning("Keine Antwort vom Cloud-System erhalten.");
                 return null;
             }
             return response;
-
         } catch (IOException e) {
             getLogger().warning("Fehler bei der Verbindung zum Cloud-System: " + e.getClass().getSimpleName() + " - " + e.getMessage());
             return null;
         }
     }
-
     public class CloudCommand extends Command {
-
         public CloudCommand() {
             super("cloud", "cloud.admin");
         }
-
         @Override
         public void execute(CommandSender sender, String[] args) {
             if (args.length == 0) {
@@ -195,9 +204,6 @@ public class BungeeCloudBridge extends Plugin implements Listener {
                 getLogger().warning("Fehler beim Ausführen von /cloud " + cmd + ": " + e.getMessage());
             }
         }
-
-
-
         private void sendError(CommandSender sender, String message) {
             sender.sendMessage(new TextComponent(PREFIX + "§c" + message));
         }
@@ -222,8 +228,6 @@ public class BungeeCloudBridge extends Plugin implements Listener {
                 if (port > 0 && !proxy) {
                     addServerToProxy(serverName, port);
                     sendSuccess(sender, "Server §b" + serverName + " §awurde zum Proxy auf Port §b" + port + " §ahinzugefügt.");
-
-                    // ✅ HIER: Serverstart in MySQL loggen
                     logServerStartToMySQL(serverName, template);
                 }
                 sendSeparator(sender);
@@ -231,7 +235,6 @@ public class BungeeCloudBridge extends Plugin implements Listener {
                 sendError(sender, "Fehler beim Starten des Servers.");
             }
         }
-
 
         private void logServerStartToMySQL(String serverName, String template) {
             File baseDir = getDataFolder().getAbsoluteFile();
@@ -269,15 +272,6 @@ public class BungeeCloudBridge extends Plugin implements Listener {
                 }
             } catch (Exception e) {
                 getLogger().warning("Fehler beim Lesen der mysql.json: " + e.getMessage());
-            }
-        }
-
-
-
-
-        public static int getFreePort() throws IOException {
-            try (ServerSocket socket = new ServerSocket(0)) {
-                return socket.getLocalPort();
             }
         }
         private void handleStopServer(CommandSender sender, String[] args) {

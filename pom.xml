@@ -41,7 +41,13 @@
             <artifactId>mysql-connector-java</artifactId>
             <version>8.0.33</version>
         </dependency>
-
+        <dependency>
+            <groupId>de.synccloud</groupId>
+            <artifactId>CloudPerms</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>C:\Users\Louis\Desktop\API\CloudSystem-SignSpigot-1.0-SNAPSHOT.jar</systemPath>
+        </dependency>
         <dependency>
             <groupId>net.md-5</groupId>
             <artifactId>bungeecord-api</artifactId>
