@@ -20,7 +20,14 @@ public class TablistHandler implements Listener {
 
     public TablistHandler() {
         // Gehe 5 Verzeichnisse zurück und dann in die Datei "service.json"
-        File serviceFile = new File("../../../../../service.json").getAbsoluteFile();
+        File serviceFile = new File("service.json").getAbsoluteFile();
+
+        System.out.println(   serviceFile.getAbsolutePath());
+
+        serviceFile = serviceFile.getParentFile().getParentFile().getParentFile();
+        serviceFile = new File(serviceFile, "service.json");
+
+        System.out.println(   serviceFile.getAbsolutePath());
 
         String headerTemp = "\n &b&o■ &8┃ &3&lSyncCloud &8● &7Earthquake &8&l» &7&o%online_players%&8/&7&o%max_players% &8┃ &b&o■ \n &8► &7Current server &8● &b%server% &8◄ \n ";
         String footerTemp = "\n &7Discord &8&l» &bdiscord.synccloud.eu \n &7&oNext &3&l&oGeneration &7&oNetwork \n ";
