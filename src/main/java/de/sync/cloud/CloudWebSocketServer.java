@@ -87,6 +87,22 @@ public class CloudWebSocketServer extends WebSocketServer {
                     String status = ProxyServer.getInstance().getServers().containsKey(name) ? "Online" : "Offline";
                     conn.send("STATUS " + status);
                 }
+                case "ONLINE_PLAYERS" -> {
+                    if (!request.has("serverName")) {
+                        conn.send("[LOG] Fehlender Parameter: serverName");
+                        return;
+                    }
+                    String name = request.get("serverName").getAsString();
+
+                    ServerInfo serverInfo = ProxyServer.getInstance().getServers().get(name);
+                    int onlinePlayers = 0;
+                    if (serverInfo != null) {
+                        // Anzahl der Spieler ermitteln
+                        onlinePlayers = ProxyServer.getInstance().getOnlineCount();
+                    }
+                    conn.send("ONLINE_PLAYERS " + name + " " + onlinePlayers);
+                }
+
                 case "SET_MOTD" -> {
                     if (!request.has("motd")) {
                         conn.send("[LOG] Fehlender Parameter: motd");

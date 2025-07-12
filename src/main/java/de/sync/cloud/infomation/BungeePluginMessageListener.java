@@ -31,16 +31,15 @@ public class BungeePluginMessageListener implements Listener {
                     count = ProxyServer.getInstance().getServerInfo(serverName).getPlayers().size();
                 }
 
-                // Nun Antwort zurücksenden
                 ByteArrayOutputStream byteOut = new ByteArrayOutputStream();
                 DataOutputStream out = new DataOutputStream(byteOut);
                 out.writeUTF("PlayerCount");
                 out.writeUTF(serverName);
                 out.writeInt(count);
 
-                // Jetzt an den ursprünglichen Spieler zurücksenden
-                if (event.getReceiver() instanceof ProxiedPlayer player) {
-                    player.getServer().sendData("BungeeCord", byteOut.toByteArray());
+                // Antwort an den ursprünglichen Server senden
+                if (event.getReceiver() instanceof Server server) {
+                    server.sendData("BungeeCord", byteOut.toByteArray());
                 }
             }
         } catch (IOException e) {

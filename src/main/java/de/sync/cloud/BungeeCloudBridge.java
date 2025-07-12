@@ -4,27 +4,27 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import de.sync.cloud.commands.CLOUD_Lobby;
+import de.sync.cloud.commands.SetSlotCommand;
 import de.sync.cloud.infomation.BungeePluginMessageListener;
+import de.sync.cloud.infomation.CloudCommandReceiver;
 import de.sync.cloud.infomation.ServerInfoProvider;
-import de.sync.cloud.listener.CloudSignBungeeListener;
-import de.sync.cloud.listener.ConnectEvent;
-import de.sync.cloud.listener.LoginListener;
+import de.sync.cloud.listener.*;
 import de.sync.cloud.permissionsystem.PermissionManager;
 import de.sync.cloud.tab.TablistHandler;
+import de.sync.cloud.tab.test;
 import net.md_5.bungee.api.CommandSender;
 import net.md_5.bungee.api.ProxyServer;
 import net.md_5.bungee.api.ServerPing;
 import net.md_5.bungee.api.chat.TextComponent;
 import net.md_5.bungee.api.config.ServerInfo;
+import net.md_5.bungee.api.connection.ProxiedPlayer;
 import net.md_5.bungee.api.event.ProxyPingEvent;
-import net.md_5.bungee.api.event.ServerConnectEvent;
 import net.md_5.bungee.api.plugin.Command;
 import net.md_5.bungee.api.plugin.Listener;
 import net.md_5.bungee.api.plugin.Plugin;
 import net.md_5.bungee.event.EventHandler;
 
 import java.io.*;
-import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.InetSocketAddress;
 import java.sql.*;
@@ -37,12 +37,18 @@ import static de.sync.cloud.print.PrintInfo.sendHelp;
 
 public class BungeeCloudBridge extends Plugin implements Listener {
 
+
     private PermissionManager permissionManager;
+
+    private static BungeeCloudBridge instance;
+
+
+
 
     private static final String AUTH_PASSWORD = "supersecret"; // MUSS gleich sein wie CloudSystem
     private static final String CLOUD_HOST = "127.0.0.1";
     private static final int CLOUD_PORT = 9100;
-    private static final String LOBBY_SERVER = "lobby-1";
+    private static final String LOBBY_SERVER = "Lobby-1";
 
     private final Gson gson = new Gson();
     private String motd = "§cMOTD nicht geladen!";
@@ -53,20 +59,30 @@ public class BungeeCloudBridge extends Plugin implements Listener {
         this.permissionManager = new PermissionManager(this);
         this.permissionManager.reload();
         startAutoUpdate();
+        instance = this;
+        TablistHandler.startMaxPlayersUpdater();
         getProxy().getPluginManager().registerListener(this, new LoginListener(permissionManager));
         getProxy().getPluginManager().registerListener(this, this);
-        getProxy().getPluginManager().registerListener(this, new TablistHandler());
+        setInitialMaxPlayers();
+        getProxy().getPluginManager().registerListener(this, new TablistHandler(this));
         getProxy().getPluginManager().registerListener(this, new ConnectEvent());
+        getProxy().getPluginManager().registerListener(this, new KickRedirectListener());
         getProxy().registerChannel("SignSystem");
         getProxy().registerChannel("BungeeCord");
+        getProxy().getPluginManager().registerListener(this, new CloudCommandReceiver());
+
+        System.out.println("[DEBUG] PluginMessageListener registered");
         getProxy().getPluginManager().registerListener(this, new BungeePluginMessageListener());
         getProxy().getPluginManager().registerListener(this, new ServerInfoProvider());
+        getProxy().getPluginManager().registerListener(this, new ServerListener());
+        getProxy().getPluginManager().registerListener(this, new test());
         new CloudSignBungeeListener(this);
         getLogger().info("BungeeCloudPlugin aktiviert!");
         getProxy().getPluginManager().registerCommand(this, new CloudCommand());
         getProxy().getPluginManager().registerCommand(this, new CLOUD_Lobby("lobby"));
         getProxy().getPluginManager().registerCommand(this, new CLOUD_Lobby("hub"));
         getProxy().getPluginManager().registerCommand(this, new CLOUD_Lobby("l"));
+        getProxy().getPluginManager().registerCommand(this, new SetSlotCommand(this));
         loadMotdFromCloud();
         CloudWebSocketServer server = new CloudWebSocketServer(1234);
         server.start();
@@ -79,6 +95,72 @@ public class BungeeCloudBridge extends Plugin implements Listener {
             getLogger().info("- " + name + " -> " + info.getAddress().toString());
         }
     }
+
+
+
+    private void setInitialMaxPlayers() {
+        try {
+            File mysqlFile = getDataFolder().toPath()
+                    .getParent().getParent().getParent().getParent()
+                    .resolve("mysql.json").toFile();
+
+            if (!mysqlFile.exists()) {
+                getLogger().warning("mysql.json nicht gefunden!");
+                return;
+            }
+
+            JsonObject config;
+            try (FileReader reader = new FileReader(mysqlFile)) {
+                config = JsonParser.parseReader(reader).getAsJsonObject();
+            }
+
+            String host = config.get("host").getAsString();
+            int port = config.get("port").getAsInt();
+            String db = config.get("database").getAsString();
+            String user = config.get("user").getAsString();
+            String pass = config.get("password").getAsString();
+
+            String jdbc = "jdbc:mysql://" + host + ":" + port + "/" + db + "?useSSL=false&autoReconnect=true";
+
+            try (Connection conn = DriverManager.getConnection(jdbc, user, pass)) {
+
+                // 1. Tabelle erstellen, falls sie nicht existiert
+                String createTable = "CREATE TABLE IF NOT EXISTS maxslots (" +
+                        "proxy_name VARCHAR(255) PRIMARY KEY," +
+                        "slots INT NOT NULL," +
+                        "timestamp DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP" +
+                        ")";
+                try (Statement stmt = conn.createStatement()) {
+                    stmt.executeUpdate(createTable);
+                }
+
+                // 2. Standardwert setzen oder aktualisieren
+                String proxyName = getProxy().getName(); // z.B. "Proxy-1"
+                int initialSlots = 65;
+
+                String insertOrUpdate = "INSERT INTO maxslots (proxy_name, slots) VALUES (?, ?) " +
+                        "ON DUPLICATE KEY UPDATE slots = VALUES(slots), timestamp = NOW()";
+
+                try (PreparedStatement stmt = conn.prepareStatement(insertOrUpdate)) {
+                    stmt.setString(1, proxyName);
+                    stmt.setInt(2, initialSlots);
+                    stmt.executeUpdate();
+                    getLogger().info("MaxPlayers in MySQL gesetzt: " + initialSlots);
+                }
+            }
+
+        } catch (Exception e) {
+            getLogger().warning("Fehler beim Setzen der initialen MaxPlayers: " + e.getMessage());
+        }
+    }
+
+
+
+    public static BungeeCloudBridge getInstance() {
+        return instance;
+    }
+
+
 
     public PermissionManager getPermissionManager() {
         return permissionManager;
@@ -192,10 +274,13 @@ public class BungeeCloudBridge extends Plugin implements Listener {
             try {
                 switch (cmd) {
                     case "startserver" -> handleStartServer(sender, args);
+                    case "startservice" -> handleStartService(sender, args);
                     case "stopserver" -> handleStopServer(sender, args);
                     case "stopall" -> handleStopAll(sender);
                     case "listservers" -> handleListServers(sender);
                     case "statusserver" -> handleStatusServer(sender, args);
+                    case "set" -> handleSetCommand(sender, args);
+
                     case "help" -> sendHelp(sender);
                     default -> sendError(sender, "Unbekannter Befehl. Benutze §b/cloud help§r für Hilfe.");
                 }
@@ -214,7 +299,7 @@ public class BungeeCloudBridge extends Plugin implements Listener {
 
         private void handleStartServer(CommandSender sender, String[] args) {
             if (args.length < 2) {
-                sendError(sender, "Benutzung: /cloud startserver <name> [template] [proxy:true|false]");
+                sendError(sender, "useage: /cloud startserver <name> [template] [proxy:true|false]");
                 return;
             }
             String serverName = args[1];
@@ -223,18 +308,175 @@ public class BungeeCloudBridge extends Plugin implements Listener {
 
             String response = sendStartServerAndGetResponse(serverName, template, proxy);
             if (response != null && response.startsWith("SERVER_STARTED")) {
-                sendSuccess(sender, "Starte Server §b" + serverName + "§a mit Template §b" + template + (proxy ? " §aals Proxy" : "") + ".");
+                sendSuccess(sender, "Starting server §b" + serverName + "§a with template §b" + template + (proxy ? " §aas a proxy" : "") + ".");
                 int port = extractPortFromResponse(response);
                 if (port > 0 && !proxy) {
                     addServerToProxy(serverName, port);
-                    sendSuccess(sender, "Server §b" + serverName + " §awurde zum Proxy auf Port §b" + port + " §ahinzugefügt.");
+                    sendSuccess(sender, "Server §b" + serverName + " §ahas been added as a proxy on port §b" + port + "§a.");
                     logServerStartToMySQL(serverName, template);
                 }
                 sendSeparator(sender);
             } else {
-                sendError(sender, "Fehler beim Starten des Servers.");
+                sendError(sender, "Error while starting the server.");
             }
         }
+
+        private void handleStartService(CommandSender sender, String[] args) {
+            if (args.length < 2) {
+                sendError(sender, "usage: /cloud startservice <name> [count] [template] [proxy:true|false]");
+                return;
+            }
+
+            String baseName = args[1];
+            int count = 1;
+            String template = "default";
+            boolean proxy = false;
+
+            if (args.length >= 3) {
+                try {
+                    count = Integer.parseInt(args[2]);
+                } catch (NumberFormatException e) {
+                    template = args[2];
+                }
+            }
+
+            if (args.length >= 4) {
+                if (template.equals("default")) {
+                    template = args[3];
+                } else {
+                    proxy = Boolean.parseBoolean(args[3]);
+                }
+            }
+
+            if (args.length >= 5) {
+                proxy = Boolean.parseBoolean(args[4]);
+            }
+
+            int started = 0;
+            int index = 1;
+
+            while (started < count) {
+                String serverName = baseName + "-" + index;
+
+                if (isServerRegisteredInProxy(serverName)) {
+                    index++;
+                    continue; // Skip already registered server
+                }
+
+                String response = sendStartServerAndGetResponse(serverName, template, proxy);
+                if (response != null && response.startsWith("SERVER_STARTED")) {
+                    sendSuccess(sender, "Starting server §b" + serverName + "§a with template §b" + template + (proxy ? " §aas a proxy" : "") + ".");
+                    int port = extractPortFromResponse(response);
+                    if (port > 0 && !proxy) {
+                        addServerToProxy(serverName, port);
+                        sendSuccess(sender, "Server §b" + serverName + " §ahas been added as a proxy on port §b" + port + "§a.");
+                        logServerStartToMySQL(serverName, template);
+                    }
+                    sendSeparator(sender);
+                    started++;
+                } else {
+                    sendError(sender, "Error while starting server §c" + serverName + "§r.");
+                }
+
+                index++; // Always increment to avoid duplicates
+            }
+
+        }
+        private boolean isServerRegisteredInProxy(String serverName) {
+            return ProxyServer.getInstance().getServers().containsKey(serverName.toLowerCase());
+        }
+
+
+
+        private void handleSetCommand(CommandSender sender, String[] args) {
+            if (args.length >= 3 && args[1].equalsIgnoreCase("maintenance")) {
+                boolean value;
+                try {
+                    value = Boolean.parseBoolean(args[2]);
+                } catch (Exception e) {
+                    sendError(sender, "Ungültiger Wert. Bitte benutze true oder false.");
+                    return;
+                }
+                MaintenanceManager.setMaintenance(value);
+                sendSuccess(sender, "Wartungsmodus wurde " + (value ? "§aaktiviert" : "§cdeaktiviert") + "§r.");
+            } else {
+                sendError(sender, "Benutze: /cloud set maintenance <true|false>");
+            }
+        }
+
+        private void checkAndStartMinServersForGroup(String stoppedServerName) {
+            // Gruppe herausfinden aus dem Servernamen: z.B. "lobby-2" → "lobby"
+            String groupName = stoppedServerName.split("-")[0];
+
+            File baseDir = getDataFolder().getAbsoluteFile();
+            File mysqlFile = baseDir.toPath()
+                    .getParent().getParent().getParent().getParent()
+                    .resolve("mysql.json")
+                    .toFile();
+
+            if (!mysqlFile.exists()) {
+                getLogger().warning("mysql.json nicht gefunden, kann min_server nicht prüfen.");
+                return;
+            }
+
+            try (FileReader reader = new FileReader(mysqlFile)) {
+                JsonObject mysqlConfig = JsonParser.parseReader(reader).getAsJsonObject();
+
+                String host = mysqlConfig.get("host").getAsString();
+                int port = mysqlConfig.get("port").getAsInt();
+                String database = mysqlConfig.get("database").getAsString();
+                String user = mysqlConfig.get("user").getAsString();
+                String password = mysqlConfig.get("password").getAsString();
+
+                String jdbcUrl = "jdbc:mysql://" + host + ":" + port + "/" + database + "?useSSL=false&autoReconnect=true";
+
+                try (Connection connection = DriverManager.getConnection(jdbcUrl, user, password)) {
+                    // 1. min_server auslesen
+                    String queryMin = "SELECT min_server FROM groups WHERE group_name = ?";
+                    try (PreparedStatement stmt = connection.prepareStatement(queryMin)) {
+                        stmt.setString(1, groupName);
+                        try (ResultSet rs = stmt.executeQuery()) {
+                            if (rs.next()) {
+                                int minServer = rs.getInt("min_server");
+
+                                // 2. Online-Server zählen
+                                long onlineCount = ProxyServer.getInstance().getServers().keySet().stream()
+                                        .filter(name -> name.startsWith(groupName + "-"))
+                                        .count();
+
+                                int toStart = minServer - (int) onlineCount;
+
+                                if (toStart > 0) {
+                                    getLogger().info("Es fehlen " + toStart + " Server für Gruppe " + groupName + ", starte automatisch nach.");
+                                    for (int i = 1; i <= 100; i++) {
+                                        String serverCandidate = groupName + "-" + i;
+                                        if (!ProxyServer.getInstance().getServers().containsKey(serverCandidate)) {
+                                            String cmd = "cloud startserver " + serverCandidate + " " + groupName + " false";
+                                            ProxyServer.getInstance().getPluginManager().dispatchCommand(
+                                                    ProxyServer.getInstance().getConsole(), cmd
+                                            );
+                                            getLogger().info("Auto-start: " + serverCandidate);
+                                            for (ProxiedPlayer  all : ProxyServer.getInstance().getPlayers()){
+                                                if(all.hasPermission("*")){
+                                                    all.sendMessage("§8[§b§lCloud§8] §a" + serverCandidate + " §7is now starting.");
+                                                }
+                                            }
+                                            toStart--;
+                                            if (toStart <= 0) break;
+                                        }
+                                    }
+                                } else {
+                                    getLogger().info("Enough servers online for group " + groupName + " (" + onlineCount + "/" + minServer + ")");
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                getLogger().severe("Fehler bei min_server-Prüfung für " + stoppedServerName + ": " + e.getMessage());
+            }
+        }
+
 
         private void logServerStartToMySQL(String serverName, String template) {
             File baseDir = getDataFolder().getAbsoluteFile();
@@ -281,12 +523,17 @@ public class BungeeCloudBridge extends Plugin implements Listener {
             }
             String serverName = args[1];
             if (sendStopServer(serverName)) {
-                sendSuccess(sender, "Server §b" + serverName + " §awird gestoppt.");
+                for (ProxiedPlayer  all : ProxyServer.getInstance().getPlayers()) {
+                    if (all.hasPermission("*")) {
+                        all.sendMessage("§8[§b§lCloud§8] §a" + serverName + " §7is now stopping.");
+                    }
+                }
                 removeServerFromProxy(serverName);
                 removeServerFromMySQL(serverName);  // <---- Hier entferne aus DB
+                checkAndStartMinServersForGroup(serverName);
                 sendSeparator(sender);
             } else {
-                sendError(sender, "Fehler beim Stoppen des Servers.");
+                sendError(sender, "Error while stopping the server.");
             }
         }
 
@@ -336,20 +583,20 @@ public class BungeeCloudBridge extends Plugin implements Listener {
         private void handleStopAll(CommandSender sender) {
             String response = sendStopAllServers();
             if ("ALL_SERVERS_STOPPED".equals(response)) {
-                sendSuccess(sender, "Alle Server werden gestoppt.");
+                sendSuccess(sender, "All servers are stopping.");
                 ProxyServer.getInstance().getServers().keySet().removeIf(server -> !server.equalsIgnoreCase(LOBBY_SERVER));
                 getLogger().info("Alle Server außer Lobby wurden aus dem Proxy entfernt.");
                 sendSeparator(sender);
             } else {
-                sendError(sender, "Fehler beim Stoppen aller Server.");
+                sendError(sender, "Error while stopping all servers.");
             }
         }
 
         private void handleListServers(CommandSender sender) {
             String list = sendListServers();
-            sender.sendMessage(new TextComponent(PREFIX + "§bLaufende Server:"));
-            if (list.isBlank() || "Keine Server gefunden".equalsIgnoreCase(list)) {
-                sender.sendMessage(new TextComponent(" §7(Keine Server gefunden)"));
+            sender.sendMessage(new TextComponent(PREFIX + "§bRunning servers:"));
+            if (list.isBlank() || "No servers found".equalsIgnoreCase(list)) {
+                sender.sendMessage(new TextComponent(" §7(No servers found)"));
             } else {
                 String[] servers = list.split(",");
                 for (String srv : servers) {
@@ -361,16 +608,16 @@ public class BungeeCloudBridge extends Plugin implements Listener {
 
         private void handleStatusServer(CommandSender sender, String[] args) {
             if (args.length < 2) {
-                sendError(sender, "Benutzung: /cloud statusserver <name>");
+                sendError(sender, "Usage: /cloud statusserver <name>");
                 return;
             }
             String serverName = args[1];
             String status = sendServerStatus(serverName);
             if (status != null) {
-                sendSuccess(sender, "Status von Server §b" + serverName + ": §e" + status);
+                sendSuccess(sender, "Status of server §b" + serverName + ": §e" + status);
                 sendSeparator(sender);
             } else {
-                sendError(sender, "Fehler beim Abrufen des Serverstatus.");
+                sendError(sender, "Error retrieving the server status.");
             }
         }
 
@@ -380,7 +627,7 @@ public class BungeeCloudBridge extends Plugin implements Listener {
 
         // --- Hilfsmethoden für Serverkommunikation ---
 
-        private String sendStartServerAndGetResponse(String name, String template, boolean proxy) {
+        public static String sendStartServerAndGetResponse(String name, String template, boolean proxy) {
             JsonObject json = new JsonObject();
             json.addProperty("type", "START_SERVER");
             json.addProperty("serverName", name);
@@ -472,7 +719,7 @@ public class BungeeCloudBridge extends Plugin implements Listener {
             ServerInfo serverInfo = ProxyServer.getInstance().constructServerInfo(
                     serverName,
                     new InetSocketAddress("127.0.0.1", port),
-                    "Dynamisch hinzugefügter Server",
+                    "Dynamically added server",
                     false
             );
             ProxyServer.getInstance().getServers().put(serverName, serverInfo);

@@ -47,7 +47,7 @@ public class CLOUD_Lobby extends Command {
 
         if (target != null) {
             player.connect(target);
-            player.sendMessage(new TextComponent("§aDu wirst mit §b" + selectedLobby + " §averbunden..."));
+            player.sendMessage(new TextComponent("§aDu wirst §averbunden..."));
         } else {
             player.sendMessage(new TextComponent("§cFehler beim Verbinden zur Lobby."));
         }
